@@ -7,6 +7,12 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
+type Session struct {
+	Name        string       `json:"name"`
+	Created     time.Time    `json:"created"`
+	Connections []Connection `json:"connections"`
+}
+
 type Connection struct {
 	ID int `json:"id"`
 

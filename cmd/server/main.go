@@ -88,6 +88,7 @@ func main() {
 	http.HandleFunc("/favicon.ico", func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "Not found", http.StatusNotFound)
 	})
+	http.HandleFunc("/api/v1/sessions", basicAuth(apiHandle))
 	http.HandleFunc("/", handlerChain)
 
 	logrus.Infof("Listening on: %s", *addr)

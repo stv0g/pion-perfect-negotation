@@ -10,6 +10,7 @@ import (
 
 type Session struct {
 	Name    string
+	Created time.Time
 
 	Messages chan SignalingMessage
 
@@ -24,6 +25,7 @@ func NewSession(name string) *Session {
 
 	s := &Session{
 		Name:             name,
+		Created:          time.Now(),
 		Connections:      map[*Connection]interface{}{},
 		Messages:         make(chan SignalingMessage, 100),
 		LastConnectionID: 0,
