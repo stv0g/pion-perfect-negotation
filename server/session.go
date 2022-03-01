@@ -10,23 +10,85 @@ import (
 type Session struct {
 	Name string
 
-	Messages chan common.SignalingMessage
+	Messages chan SignalingMessage
 
 	Connections      map[*Connection]interface{}
 	ConnectionsMutex sync.RWMutex
+
+	LastConnectionID int
 }
 
 func NewSession(name string) *Session {
-	logrus.Infof("New session: %s", name)
+	logrus.Infof("Session opened: %s", name)
+
 	s := &Session{
-		Name:        name,
-		Connections: map[*Connection]interface{}{},
-		Messages:    make(chan common.SignalingMessage, 100),
+		Name:             name,
+		Connections:      map[*Connection]interface{}{},
+		Messages:         make(chan SignalingMessage, 100),
+		LastConnectionID: 1000,
 	}
 
 	go s.run()
 
+	metricSessionsCreated.Inc()
+
 	return s
+}
+
+func (s *Session) RemoveConnection(c *Connection) error {
+	s.ConnectionsMutex.Lock()
+	defer s.ConnectionsMutex.Unlock()
+
+	delete(s.Connections, c)
+
+	if len(s.Connections) == 0 {
+		sessionsMutex.Lock()
+		delete(sessions, s.Name)
+		sessionsMutex.Unlock()
+
+		logrus.Infof("Session closed: %s", s.Name)
+
+		return nil
+	} else {
+		return s.SendControlMessages()
+	}
+}
+
+func (s *Session) AddConnection(c *Connection) error {
+	s.ConnectionsMutex.Lock()
+	defer s.ConnectionsMutex.Unlock()
+
+	c.ID = s.LastConnectionID
+	s.LastConnectionID++
+
+	s.Connections[c] = nil
+
+	return s.SendControlMessages()
+}
+
+func (s *Session) SendControlMessages() error {
+	conns := []common.Connection{}
+	for c := range s.Connections {
+		conns = append(conns, c.Connection)
+	}
+
+	cmsg := &common.SignalingMessage{
+		Control: &common.ControlMessage{
+			Connections: conns,
+		},
+	}
+
+	for c := range s.Connections {
+		cmsg.Control.ConnectionID = c.ID
+
+		if err := c.Conn.WriteJSON(cmsg); err != nil {
+			return err
+		} else {
+			logrus.Infof("Send control message: %s", cmsg)
+		}
+	}
+
+	return nil
 }
 
 func (s *Session) String() string {
@@ -35,6 +97,8 @@ func (s *Session) String() string {
 
 func (s *Session) run() {
 	for msg := range s.Messages {
+		msg.CollectMetrics()
+
 		s.ConnectionsMutex.RLock()
 
 		for c := range s.Connections {
@@ -45,16 +109,6 @@ func (s *Session) run() {
 
 		s.ConnectionsMutex.RUnlock()
 	}
-}
-
-func (s *Session) HasImpoliteConnection() bool {
-	hasImpolite := false
-	for c := range s.Connections {
-		if !c.isPolite {
-			hasImpolite = true
-		}
-	}
-	return hasImpolite
 }
 
 func (s *Session) Close() error {

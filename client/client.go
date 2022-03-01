@@ -17,38 +17,33 @@ type SignalingClient struct {
 
 	done chan struct{}
 
-	isClosing        bool
-	reconnectTimeout time.Duration
+	isClosing bool
+	backoff   common.ExponentialBackoff
 
-	messageCallbacks []func(msg *common.SignalingMessage)
-	connectCallbacks []func(msg *common.SignalingMessage)
-}
-
-func exponentialBackup(dur time.Duration) time.Duration {
-	max := 1 * time.Minute
-
-	dur = time.Duration(1.5 * float32(dur)).Round(time.Second)
-	if dur > max {
-		dur = max
-	}
-
-	return dur
+	messageCallbacks    []func(msg *common.SignalingMessage)
+	connectCallbacks    []func()
+	disconnectCallbacks []func()
 }
 
 func NewSignalingClient(u *url.URL) (*SignalingClient, error) {
 	c := &SignalingClient{
-		messageCallbacks: []func(msg *common.SignalingMessage){},
-		connectCallbacks: []func(msg *common.SignalingMessage){},
-		isClosing:        false,
-		reconnectTimeout: time.Second,
-		URL:              u,
+		messageCallbacks:    []func(msg *common.SignalingMessage){},
+		connectCallbacks:    []func(){},
+		disconnectCallbacks: []func(){},
+		isClosing:           false,
+		backoff:             common.DefaultExponentialBackoff,
+		URL:                 u,
 	}
 
 	return c, nil
 }
 
-func (c *SignalingClient) OnConnect(cb func(msg *common.SignalingMessage)) {
+func (c *SignalingClient) OnConnect(cb func()) {
 	c.connectCallbacks = append(c.connectCallbacks, cb)
+}
+
+func (c *SignalingClient) OnDisconnect(cb func()) {
+	c.disconnectCallbacks = append(c.connectCallbacks, cb)
 }
 
 func (c *SignalingClient) OnMessage(cb func(msg *common.SignalingMessage)) {
@@ -56,7 +51,7 @@ func (c *SignalingClient) OnMessage(cb func(msg *common.SignalingMessage)) {
 }
 
 func (c *SignalingClient) SendSignalingMessage(msg *common.SignalingMessage) error {
-	logrus.Infof("Sending message: %#+v", msg)
+	logrus.Infof("Sending signaling message: %s", msg)
 	return c.Conn.WriteJSON(msg)
 }
 
@@ -97,19 +92,14 @@ func (c *SignalingClient) Connect() error {
 		return fmt.Errorf("failed to dial %s: %w", c.URL, err)
 	}
 
-	var msg common.SignalingMessage
-	if err := c.Conn.ReadJSON(&msg); err != nil {
-		return fmt.Errorf("failed to receive message: %w", err)
+	for _, cb := range c.connectCallbacks {
+		cb()
 	}
 
 	go c.read()
 
-	for _, cb := range c.connectCallbacks {
-		cb(&msg)
-	}
-
 	// Reset reconnect timer
-	c.reconnectTimeout = 1 * time.Second
+	c.backoff.Reset()
 
 	c.done = make(chan struct{})
 
@@ -117,13 +107,12 @@ func (c *SignalingClient) Connect() error {
 }
 
 func (c *SignalingClient) ConnectWithBackoff() error {
-	t := time.NewTimer(c.reconnectTimeout)
+	t := time.NewTimer(c.backoff.Duration)
 	for range t.C {
 		if err := c.Connect(); err != nil {
-			c.reconnectTimeout = exponentialBackup(c.reconnectTimeout)
-			t.Reset(c.reconnectTimeout)
+			t.Reset(c.backoff.Next())
 
-			logrus.Errorf("Failed to connect: %s. Reconnecting in %s", err, c.reconnectTimeout)
+			logrus.Errorf("Failed to connect: %s. Reconnecting in %s", err, c.backoff.Duration)
 		} else {
 			break
 		}
@@ -137,34 +126,40 @@ func (c *SignalingClient) read() {
 		msg := &common.SignalingMessage{}
 		if err := c.Conn.ReadJSON(msg); err != nil {
 			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				c.closed()
+
 			} else {
 				logrus.Errorf("Failed to read: %s", err)
 			}
-			return
+			break
 		}
 
-		logrus.Infof("Received message: %#+v", msg)
+		logrus.Infof("Received signaling message: %s", msg)
 
 		for _, cb := range c.messageCallbacks {
 			cb(msg)
 		}
 	}
+
+	c.closed()
 }
 
 func (c *SignalingClient) closed() {
 	if err := c.Conn.Close(); err != nil {
-		logrus.Errorf("Failed to close connection: %w", err)
+		logrus.Errorf("Failed to close connection: %s", err)
 	}
 
 	c.Conn = nil
+
+	for _, cb := range c.disconnectCallbacks {
+		cb()
+	}
 
 	close(c.done)
 
 	if c.isClosing {
 		logrus.Infof("Connection closed")
 	} else {
-		logrus.Warnf("Connection lost. Reconnecting in %s", c.reconnectTimeout)
+		logrus.Warnf("Connection lost. Reconnecting in %s", c.backoff.Duration)
 		go c.ConnectWithBackoff()
 	}
 }

@@ -9,24 +9,10 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
-)
-
-const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-
-	// Maximum message size allowed from peer.
-	maxMessageSize = 4096
 )
 
 var (
@@ -41,26 +27,31 @@ var (
 )
 
 func handle(w http.ResponseWriter, r *http.Request) {
+	if r.RequestURI == "/favicon.ico" {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logrus.Errorf("Failed to upgrade:", err)
+		logrus.Errorf("Failed to upgrade: %s", err)
 		return
 	}
 
 	n := strings.TrimLeft(r.URL.Path, "/")
 
 	sessionsMutex.Lock()
-	if s, ok := sessions[n]; !ok {
+
+	s, ok := sessions[n]
+	if !ok {
 		s = NewSession(n)
-
 		sessions[n] = s
-
-		s.NewConnection(c)
-		logrus.Infof("Created new session: %s", n)
-	} else {
-		s.NewConnection(c)
-		logrus.Infof("Used existing session: %s", n)
 	}
+
+	if _, err := s.NewConnection(c, r); err != nil {
+		logrus.Errorf("Failed to create connection: %s", err)
+	}
+
 	sessionsMutex.Unlock()
 }
 
@@ -93,7 +84,14 @@ func main() {
 		Addr: *addr,
 	}
 
-	http.HandleFunc("/", handle)
+	handler := http.HandlerFunc(handle)
+
+	handlerChain := promhttp.InstrumentHandlerDuration(metricHttpRequestDuration,
+		promhttp.InstrumentHandlerCounter(metricHttpRequestsTotal, handler),
+	)
+
+	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/", handlerChain)
 
 	logrus.Infof("Listening on: %s", *addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -14,13 +14,38 @@ type PeerConnection struct {
 	*webrtc.PeerConnection
 	*SignalingClient
 
-	makingOffer                  bool
-	ignoreOffer                  bool
-	polite                       bool
-	isSettingRemoteAnswerPending bool
+	makingOffer bool
+	ignoreOffer bool
+
+	first  bool
+	polite bool
+
+	rollback bool
 }
 
 func NewPeerConnection(u *url.URL) (*PeerConnection, error) {
+	sc, err := NewSignalingClient(u)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create signaling client: %w", err)
+	}
+
+	ppc := &PeerConnection{
+		SignalingClient: sc,
+	}
+
+	ppc.SignalingClient.OnMessage(ppc.OnSignalingMessageHandler)
+	ppc.SignalingClient.OnConnect(ppc.OnSignalingConnectedHandler)
+
+	if err := ppc.SignalingClient.ConnectWithBackoff(); err != nil {
+		return nil, fmt.Errorf("failed to connect signaling client: %w", err)
+	}
+
+	return ppc, nil
+}
+
+func (pc *PeerConnection) createPeerConnection() (*webrtc.PeerConnection, error) {
+	logrus.Info("Created new peer connection")
+
 	// Prepare the configuration
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
@@ -31,71 +56,131 @@ func NewPeerConnection(u *url.URL) (*PeerConnection, error) {
 	}
 
 	// Create a new RTCPeerConnection
-	pc, err := webrtc.NewPeerConnection(config)
+	ppc, err := webrtc.NewPeerConnection(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
-	sc, err := NewSignalingClient(u)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to create signaling client: %w", err)
-	}
-
-	ppc := &PeerConnection{
-		SignalingClient: sc,
-		PeerConnection:  pc,
-
-		makingOffer:                  false,
-		ignoreOffer:                  false,
-		isSettingRemoteAnswerPending: false,
-	}
-
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
-	ppc.PeerConnection.OnICEConnectionStateChange(ppc.OnICEConnectionStateChangeHandler)
-	ppc.PeerConnection.OnConnectionStateChange(ppc.OnConnectionStateChangeHandler)
-	ppc.PeerConnection.OnSignalingStateChange(ppc.OnSignalingStateChangeHandler)
-	ppc.PeerConnection.OnICECandidate(ppc.OnICECandidateHandler)
-	ppc.PeerConnection.OnNegotiationNeeded(ppc.OnNegotiationNeededHandler)
-	ppc.PeerConnection.OnDataChannel(ppc.OnDataChannelHandler)
+	ppc.OnConnectionStateChange(pc.OnConnectionStateChangeHandler)
+	ppc.OnSignalingStateChange(pc.OnSignalingStateChangeHandler)
+	ppc.OnICECandidate(pc.OnICECandidateHandler)
+	ppc.OnNegotiationNeeded(pc.OnNegotiationNeededHandler)
+	ppc.OnDataChannel(pc.OnDataChannelHandler)
 
-	ppc.SignalingClient.OnMessage(ppc.OnSignalingMessageHandler)
-	ppc.SignalingClient.OnConnect(func(msg *common.SignalingMessage) {
-		ppc.polite = msg.Control != nil && msg.Control.Polite
+	if !pc.first {
+		dc, err := ppc.CreateDataChannel("demo", nil)
+		if err != nil {
+			logrus.Panicf("Failed to create datachannel: %s", err)
+		}
 
-		logrus.Infof("Connected: polite=%v", ppc.polite)
-	})
+		close := make(chan struct{})
 
-	if err := ppc.SignalingClient.ConnectWithBackoff(); err != nil {
-		return nil, fmt.Errorf("failed to connect signaling client: %w", err)
-	}
-
-	_, err = ppc.CreateDataChannel("test", nil)
-	if err != nil {
-		logrus.Panicf("Failed to create datachannel: %s", err)
+		dc.OnClose(func() { pc.OnDataChannelCloseHandler(dc, close) })
+		dc.OnOpen(func() { pc.OnDataChannelOpenHandler(dc, close) })
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) { pc.OnDataChannelMessageHandler(dc, &msg, close) })
 	}
 
 	return ppc, nil
+}
+
+func (pc *PeerConnection) rollbackPeerConnection() (*webrtc.PeerConnection, error) {
+	pc.rollback = true
+	defer func() { pc.rollback = false }()
+
+	// Close previous peer connection in before creating a new one
+	// We need to do this as pion/webrtc currently does not support rollbacks
+	if err := pc.PeerConnection.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close peer connection: %w", err)
+	}
+
+	if ppc, err := pc.createPeerConnection(); err != nil {
+		return nil, err
+	} else {
+		return ppc, nil
+	}
+}
+
+func (pc *PeerConnection) OnDataChannelOpenHandler(dc *webrtc.DataChannel, close chan struct{}) {
+	logrus.Infof("DataChannel opened: %s", dc.Label())
+
+	pc.SendMessages(dc, close)
+}
+
+func (pc *PeerConnection) OnDataChannelCloseHandler(dc *webrtc.DataChannel, cl chan struct{}) {
+	logrus.Infof("DataChannel closed: %s", dc.Label())
+
+	close(cl)
+
+	// We close the connection here to avoid waiting for the disconnected event
+	if err := pc.PeerConnection.Close(); err != nil {
+		logrus.Errorf("Failed to close peer connection: %s", err)
+	}
+}
+
+func (pc *PeerConnection) OnDataChannelMessageHandler(dc *webrtc.DataChannel, msg *webrtc.DataChannelMessage, close chan struct{}) {
+	logrus.Infof("Received: %s", string(msg.Data))
+}
+
+func (pc *PeerConnection) SendMessages(dc *webrtc.DataChannel, close chan struct{}) {
+	logrus.Info("Start sending messages")
+
+	i := 0
+	t := time.NewTicker(1 * time.Second)
+
+loop:
+	for {
+		select {
+		case <-t.C:
+			msg := fmt.Sprintf("Hello %d", i)
+
+			logrus.Infof("Send: %s", msg)
+
+			if err := dc.SendText(msg); err != nil {
+				logrus.Errorf("Failed to send message: %s", err)
+				break loop
+			}
+
+		case <-close:
+			break loop
+		}
+
+		i++
+	}
+
+	logrus.Info("Stopped sending messages")
+}
+
+func (pc *PeerConnection) OnDataChannelHandler(dc *webrtc.DataChannel) {
+	logrus.Infof("New DataChannel opened: %s", dc.Label())
+
+	close := make(chan struct{})
+
+	dc.OnOpen(func() { pc.OnDataChannelOpenHandler(dc, close) })
+	dc.OnClose(func() { pc.OnDataChannelCloseHandler(dc, close) })
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) { pc.OnDataChannelMessageHandler(dc, &msg, close) })
 }
 
 func (pc *PeerConnection) OnICECandidateHandler(c *webrtc.ICECandidate) {
 	if c == nil {
 		logrus.Info("Candidate gathering concluded")
 		return
-	} else {
-		logrus.Infof("Found new candidate: %s", c)
 	}
 
-	pc.SendSignalingMessage(&common.SignalingMessage{
+	logrus.Infof("Found new candidate: %s", c)
+
+	if err := pc.SendSignalingMessage(&common.SignalingMessage{
 		Candidate: c,
-	})
+	}); err != nil {
+		logrus.Errorf("Failed to send candidate: %s", err)
+	}
 }
 
 func (pc *PeerConnection) OnNegotiationNeededHandler() {
 	logrus.Info("Negotation needed!")
 
 	pc.makingOffer = true
-	defer func() { pc.makingOffer = false }()
 
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
@@ -111,6 +196,8 @@ func (pc *PeerConnection) OnNegotiationNeededHandler() {
 	}); err != nil {
 		logrus.Panicf("Failed to send offer: %s", err)
 	}
+
+	pc.makingOffer = false
 }
 
 func (pc *PeerConnection) OnSignalingStateChangeHandler(ss webrtc.SignalingState) {
@@ -119,19 +206,65 @@ func (pc *PeerConnection) OnSignalingStateChangeHandler(ss webrtc.SignalingState
 
 func (pc *PeerConnection) OnConnectionStateChangeHandler(pcs webrtc.PeerConnectionState) {
 	logrus.Infof("Connection State has changed: %s", pcs.String())
+
+	switch pcs {
+	case webrtc.PeerConnectionStateFailed:
+		fallthrough
+	case webrtc.PeerConnectionStateDisconnected:
+		logrus.Info("Closing peer connection")
+
+		if err := pc.PeerConnection.Close(); err != nil {
+			logrus.Panicf("Failed to close peer connection: %s", err)
+		}
+
+	case webrtc.PeerConnectionStateClosed:
+		if pc.rollback {
+			return
+		}
+
+		logrus.Info("Closed peer connection")
+
+		var err error
+		pc.PeerConnection, err = pc.createPeerConnection()
+		if err != nil {
+			logrus.Panicf("Failed to set re-create peer connection: %s", err)
+		}
+	}
 }
 
-func (pc *PeerConnection) OnICEConnectionStateChangeHandler(connectionState webrtc.ICEConnectionState) {
-	logrus.Infof("ICE Connection State has changed: %s", connectionState.String())
+func (pc *PeerConnection) OnSignalingConnectedHandler() {
+	var err error
+
+	logrus.Info("Signaling connected")
+
+	// Create initial peer connection
+	if pc.PeerConnection == nil {
+		if pc.PeerConnection, err = pc.createPeerConnection(); err != nil {
+			logrus.Warnf("failed to create peer connection: %s", err)
+		}
+	}
 }
 
 func (pc *PeerConnection) OnSignalingMessageHandler(msg *common.SignalingMessage) {
-	if msg.Description != nil {
-		// An offer may come in while we are busy processing SRD(answer).
-		// In this case, we will be in "stable" by the time the offer is processed
-		// so it is safe to chain it on our Operations Chain now.
-		readyForOffer := !pc.makingOffer &&
-			(pc.SignalingState() == webrtc.SignalingStateStable || pc.isSettingRemoteAnswerPending)
+	var err error
+
+	if msg.Control != nil {
+		if len(msg.Control.Connections) > 2 {
+			logrus.Panicf("There are already two peers connected to this session.")
+		}
+
+		pc.first = true
+		for _, c := range msg.Control.Connections {
+			if c.ID < msg.Control.ConnectionID {
+				pc.first = false
+			}
+		}
+
+		pc.polite = pc.first
+
+		logrus.Infof("New role: polite=%v, first=%v", pc.polite, pc.first)
+	} else if msg.Description != nil {
+		readyForOffer := !pc.makingOffer && pc.SignalingState() == webrtc.SignalingStateStable
 		offerCollision := msg.Description.Type == webrtc.SDPTypeOffer && !readyForOffer
 
 		pc.ignoreOffer = !pc.polite && offerCollision
@@ -139,13 +272,24 @@ func (pc *PeerConnection) OnSignalingMessageHandler(msg *common.SignalingMessage
 			return
 		}
 
-		pc.isSettingRemoteAnswerPending = msg.Description.Type == webrtc.SDPTypeAnswer
-		pc.SetRemoteDescription(*msg.Description) // SRD rolls back as needed
-		pc.isSettingRemoteAnswerPending = false
+		if msg.Description.Type == webrtc.SDPTypeOffer && pc.PeerConnection.SignalingState() != webrtc.SignalingStateStable {
+			pc.PeerConnection, err = pc.rollbackPeerConnection()
+			if err != nil {
+				logrus.Panicf("Failed to rollback peer connection: %s", err)
+			}
+		}
+
+		if err := pc.PeerConnection.SetRemoteDescription(*msg.Description); err != nil {
+			logrus.Panicf("Failed to set remote description: %s", err)
+		}
 
 		if msg.Description.Type == webrtc.SDPTypeOffer {
-			// Rollback!!!
-			if err := pc.SetLocalDescription(webrtc.SessionDescription{}); err != nil {
+			answer, err := pc.PeerConnection.CreateAnswer(nil)
+			if err != nil {
+				logrus.Panicf("Failed to create answer: %s", err)
+			}
+
+			if err := pc.SetLocalDescription(answer); err != nil {
 				logrus.Panicf("Failed to rollback signaling state: %s", err)
 			}
 
@@ -154,38 +298,20 @@ func (pc *PeerConnection) OnSignalingMessageHandler(msg *common.SignalingMessage
 			})
 		}
 	} else if msg.Candidate != nil {
-		if err := pc.AddICECandidate(msg.Candidate.ToJSON()); err != nil {
-			if !pc.ignoreOffer {
-				logrus.Panicf("Failed to add new ICE candidate: %s", err)
-			}
-
+		if err := pc.AddICECandidate(msg.Candidate.ToJSON()); err != nil && !pc.ignoreOffer {
+			logrus.Panicf("Failed to add new ICE candidate: %s", err)
 		}
 	}
 }
 
-func (pc *PeerConnection) OnDataChannelHandler(dc *webrtc.DataChannel) {
-	dc.OnOpen(func() {
-		logrus.Info("Datachannel opened")
-	})
-
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		logrus.Infof("Received: %s", msg.Data)
-	})
-
-	i := 0
-	for {
-		msg := fmt.Sprintf("Hello %d", i)
-
-		logrus.Infof("Send: %s", msg)
-
-		dc.SendText(msg)
-		time.Sleep(1 * time.Second)
-
-		i++
+func (pc *PeerConnection) Close() error {
+	if err := pc.SignalingClient.Close(); err != nil {
+		return fmt.Errorf("failed to close signaling client: %w", err)
 	}
-}
 
-func (pc *PeerConnection) Close() {
-	pc.SignalingClient.Close()
-	pc.PeerConnection.Close()
+	if err := pc.PeerConnection.Close(); err != nil {
+		return fmt.Errorf("failed to close peer connection: %w", err)
+	}
+
+	return nil
 }
