@@ -16,7 +16,6 @@ import (
 )
 
 var (
-	addr     = flag.String("addr", "localhost:8080", "http service address")
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
@@ -26,12 +25,7 @@ var (
 	server        *http.Server
 )
 
-func handle(w http.ResponseWriter, r *http.Request) {
-	if r.RequestURI == "/favicon.ico" {
-		http.Error(w, "Not found", http.StatusNotFound)
-		return
-	}
-
+func wsHandle(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logrus.Errorf("Failed to upgrade: %s", err)
@@ -84,13 +78,16 @@ func main() {
 		Addr: *addr,
 	}
 
-	handler := http.HandlerFunc(handle)
-
 	handlerChain := promhttp.InstrumentHandlerDuration(metricHttpRequestDuration,
-		promhttp.InstrumentHandlerCounter(metricHttpRequestsTotal, handler),
+		promhttp.InstrumentHandlerCounter(metricHttpRequestsTotal,
+			http.HandlerFunc(wsHandle),
+		),
 	)
 
 	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/favicon.ico", func(rw http.ResponseWriter, r *http.Request) {
+		http.Error(rw, "Not found", http.StatusNotFound)
+	})
 	http.HandleFunc("/", handlerChain)
 
 	logrus.Infof("Listening on: %s", *addr)

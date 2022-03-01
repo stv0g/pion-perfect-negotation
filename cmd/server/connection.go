@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
+	"github.com/stv0g/pion-perfect-negotation/pkg"
 )
 
 const (
@@ -26,7 +26,7 @@ const (
 )
 
 type Connection struct {
-	common.Connection
+	pkg.Connection
 
 	*websocket.Conn
 
@@ -44,7 +44,7 @@ func (s *Session) NewConnection(c *websocket.Conn, r *http.Request) (*Connection
 	logrus.Infof("New connection from %s for session '%s'", c.RemoteAddr(), s)
 
 	d := &Connection{
-		Connection: common.Connection{
+		Connection: pkg.Connection{
 			Created:   time.Now(),
 			Remote:    r.RemoteAddr,
 			UserAgent: r.UserAgent(),
@@ -79,7 +79,7 @@ func (d *Connection) String() string {
 
 func (d *Connection) read() {
 	for {
-		var msg common.SignalingMessage
+		var msg pkg.SignalingMessage
 		if err := d.Conn.ReadJSON(&msg); err != nil {
 			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				if !d.Closing {

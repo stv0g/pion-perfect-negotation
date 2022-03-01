@@ -2,13 +2,14 @@ package main
 
 import (
 	"sync"
+	"time"
 
-	"github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
 	"github.com/sirupsen/logrus"
+	"github.com/stv0g/pion-perfect-negotation/pkg"
 )
 
 type Session struct {
-	Name string
+	Name    string
 
 	Messages chan SignalingMessage
 
@@ -25,7 +26,7 @@ func NewSession(name string) *Session {
 		Name:             name,
 		Connections:      map[*Connection]interface{}{},
 		Messages:         make(chan SignalingMessage, 100),
-		LastConnectionID: 1000,
+		LastConnectionID: 0,
 	}
 
 	go s.run()
@@ -67,13 +68,13 @@ func (s *Session) AddConnection(c *Connection) error {
 }
 
 func (s *Session) SendControlMessages() error {
-	conns := []common.Connection{}
+	conns := []pkg.Connection{}
 	for c := range s.Connections {
 		conns = append(conns, c.Connection)
 	}
 
-	cmsg := &common.SignalingMessage{
-		Control: &common.ControlMessage{
+	cmsg := &pkg.SignalingMessage{
+		Control: &pkg.ControlMessage{
 			Connections: conns,
 		},
 	}

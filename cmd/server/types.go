@@ -1,9 +1,9 @@
 package main
 
-import "github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
+import "github.com/stv0g/pion-perfect-negotation/pkg"
 
 type SignalingMessage struct {
-	common.SignalingMessage
+	pkg.SignalingMessage
 
 	Sender *Connection
 }

@@ -5,9 +5,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
 	"github.com/pion/webrtc/v3"
 	"github.com/sirupsen/logrus"
+	"github.com/stv0g/pion-perfect-negotation/pkg"
 )
 
 type PeerConnection struct {
@@ -170,7 +170,7 @@ func (pc *PeerConnection) OnICECandidateHandler(c *webrtc.ICECandidate) {
 
 	logrus.Infof("Found new candidate: %s", c)
 
-	if err := pc.SendSignalingMessage(&common.SignalingMessage{
+	if err := pc.SendSignalingMessage(&pkg.SignalingMessage{
 		Candidate: c,
 	}); err != nil {
 		logrus.Errorf("Failed to send candidate: %s", err)
@@ -191,7 +191,7 @@ func (pc *PeerConnection) OnNegotiationNeededHandler() {
 		logrus.Panicf("Failed to set local description: %s", err)
 	}
 
-	if err := pc.SendSignalingMessage(&common.SignalingMessage{
+	if err := pc.SendSignalingMessage(&pkg.SignalingMessage{
 		Description: &offer,
 	}); err != nil {
 		logrus.Panicf("Failed to send offer: %s", err)
@@ -245,7 +245,7 @@ func (pc *PeerConnection) OnSignalingConnectedHandler() {
 	}
 }
 
-func (pc *PeerConnection) OnSignalingMessageHandler(msg *common.SignalingMessage) {
+func (pc *PeerConnection) OnSignalingMessageHandler(msg *pkg.SignalingMessage) {
 	var err error
 
 	if msg.Control != nil {
@@ -293,7 +293,7 @@ func (pc *PeerConnection) OnSignalingMessageHandler(msg *common.SignalingMessage
 				logrus.Panicf("Failed to rollback signaling state: %s", err)
 			}
 
-			pc.SendSignalingMessage(&common.SignalingMessage{
+			pc.SendSignalingMessage(&pkg.SignalingMessage{
 				Description: pc.LocalDescription(),
 			})
 		}

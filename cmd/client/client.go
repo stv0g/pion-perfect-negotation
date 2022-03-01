@@ -5,9 +5,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
+	"github.com/stv0g/pion-perfect-negotation/pkg"
 )
 
 type SignalingClient struct {
@@ -18,20 +18,20 @@ type SignalingClient struct {
 	done chan struct{}
 
 	isClosing bool
-	backoff   common.ExponentialBackoff
+	backoff   pkg.ExponentialBackoff
 
-	messageCallbacks    []func(msg *common.SignalingMessage)
+	messageCallbacks    []func(msg *pkg.SignalingMessage)
 	connectCallbacks    []func()
 	disconnectCallbacks []func()
 }
 
 func NewSignalingClient(u *url.URL) (*SignalingClient, error) {
 	c := &SignalingClient{
-		messageCallbacks:    []func(msg *common.SignalingMessage){},
+		messageCallbacks:    []func(msg *pkg.SignalingMessage){},
 		connectCallbacks:    []func(){},
 		disconnectCallbacks: []func(){},
 		isClosing:           false,
-		backoff:             common.DefaultExponentialBackoff,
+		backoff:             pkg.DefaultExponentialBackoff,
 		URL:                 u,
 	}
 
@@ -46,11 +46,11 @@ func (c *SignalingClient) OnDisconnect(cb func()) {
 	c.disconnectCallbacks = append(c.connectCallbacks, cb)
 }
 
-func (c *SignalingClient) OnMessage(cb func(msg *common.SignalingMessage)) {
+func (c *SignalingClient) OnMessage(cb func(msg *pkg.SignalingMessage)) {
 	c.messageCallbacks = append(c.messageCallbacks, cb)
 }
 
-func (c *SignalingClient) SendSignalingMessage(msg *common.SignalingMessage) error {
+func (c *SignalingClient) SendSignalingMessage(msg *pkg.SignalingMessage) error {
 	logrus.Infof("Sending signaling message: %s", msg)
 	return c.Conn.WriteJSON(msg)
 }
@@ -123,7 +123,7 @@ func (c *SignalingClient) ConnectWithBackoff() error {
 
 func (c *SignalingClient) read() {
 	for {
-		msg := &common.SignalingMessage{}
+		msg := &pkg.SignalingMessage{}
 		if err := c.Conn.ReadJSON(msg); err != nil {
 			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 

@@ -1,4 +1,4 @@
-module github.com/VILLASframework/VILLASnode/tools/ws-relay
+module github.com/stv0g/pion-perfect-negotation
 
 go 1.17
 
