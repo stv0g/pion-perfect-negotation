@@ -16,6 +16,7 @@ import (
 )
 
 var (
+	addr     = flag.String("addr", ":8080", "http service address")
 	upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
