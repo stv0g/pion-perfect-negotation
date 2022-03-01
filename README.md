@@ -12,7 +12,7 @@ See: https://github.com/pion/webrtc/issues/2133
 
 1. Start signaling server `go run ./server/`
 2. Start first peer `go run ./client/`
-3. Start second (polite) peer `go run ./client/ -polite`
+3. Start second peer `go run ./client/`
 
 ## References
 

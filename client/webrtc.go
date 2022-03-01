@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
 	"github.com/pion/webrtc/v3"
 	"github.com/sirupsen/logrus"
 )
@@ -19,7 +20,7 @@ type PeerConnection struct {
 	isSettingRemoteAnswerPending bool
 }
 
-func NewPeerConnection(u *url.URL, polite bool) *PeerConnection {
+func NewPeerConnection(u *url.URL) (*PeerConnection, error) {
 	// Prepare the configuration
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
@@ -32,12 +33,12 @@ func NewPeerConnection(u *url.URL, polite bool) *PeerConnection {
 	// Create a new RTCPeerConnection
 	pc, err := webrtc.NewPeerConnection(config)
 	if err != nil {
-		logrus.Panicf("Failed to create peer connection: %s", err)
+		return nil, fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
 	sc, err := NewSignalingClient(u)
 	if err != nil {
-		logrus.Panicf("Failed to create signaling client: %s", err)
+		return nil, fmt.Errorf("Failed to create signaling client: %w", err)
 	}
 
 	ppc := &PeerConnection{
@@ -47,7 +48,6 @@ func NewPeerConnection(u *url.URL, polite bool) *PeerConnection {
 		makingOffer:                  false,
 		ignoreOffer:                  false,
 		isSettingRemoteAnswerPending: false,
-		polite:                       polite,
 	}
 
 	// Set the handler for ICE connection state
@@ -59,14 +59,23 @@ func NewPeerConnection(u *url.URL, polite bool) *PeerConnection {
 	ppc.PeerConnection.OnNegotiationNeeded(ppc.OnNegotiationNeededHandler)
 	ppc.PeerConnection.OnDataChannel(ppc.OnDataChannelHandler)
 
-	ppc.SignalingClient.OnSignalingMessage(ppc.OnSignalingMessageHandler)
+	ppc.SignalingClient.OnMessage(ppc.OnSignalingMessageHandler)
+	ppc.SignalingClient.OnConnect(func(msg *common.SignalingMessage) {
+		ppc.polite = msg.Control != nil && msg.Control.Polite
+
+		logrus.Infof("Connected: polite=%v", ppc.polite)
+	})
+
+	if err := ppc.SignalingClient.ConnectWithBackoff(); err != nil {
+		return nil, fmt.Errorf("failed to connect signaling client: %w", err)
+	}
 
 	_, err = ppc.CreateDataChannel("test", nil)
 	if err != nil {
 		logrus.Panicf("Failed to create datachannel: %s", err)
 	}
 
-	return ppc
+	return ppc, nil
 }
 
 func (pc *PeerConnection) OnICECandidateHandler(c *webrtc.ICECandidate) {
@@ -77,7 +86,7 @@ func (pc *PeerConnection) OnICECandidateHandler(c *webrtc.ICECandidate) {
 		logrus.Infof("Found new candidate: %s", c)
 	}
 
-	pc.SendSignalingMessage(&SignalingMessage{
+	pc.SendSignalingMessage(&common.SignalingMessage{
 		Candidate: c,
 	})
 }
@@ -97,7 +106,7 @@ func (pc *PeerConnection) OnNegotiationNeededHandler() {
 		logrus.Panicf("Failed to set local description: %s", err)
 	}
 
-	if err := pc.SendSignalingMessage(&SignalingMessage{
+	if err := pc.SendSignalingMessage(&common.SignalingMessage{
 		Description: &offer,
 	}); err != nil {
 		logrus.Panicf("Failed to send offer: %s", err)
@@ -116,7 +125,7 @@ func (pc *PeerConnection) OnICEConnectionStateChangeHandler(connectionState webr
 	logrus.Infof("ICE Connection State has changed: %s", connectionState.String())
 }
 
-func (pc *PeerConnection) OnSignalingMessageHandler(msg *SignalingMessage) {
+func (pc *PeerConnection) OnSignalingMessageHandler(msg *common.SignalingMessage) {
 	if msg.Description != nil {
 		// An offer may come in while we are busy processing SRD(answer).
 		// In this case, we will be in "stable" by the time the offer is processed
@@ -125,8 +134,8 @@ func (pc *PeerConnection) OnSignalingMessageHandler(msg *SignalingMessage) {
 			(pc.SignalingState() == webrtc.SignalingStateStable || pc.isSettingRemoteAnswerPending)
 		offerCollision := msg.Description.Type == webrtc.SDPTypeOffer && !readyForOffer
 
-		ignoreOffer := !pc.polite && offerCollision
-		if ignoreOffer {
+		pc.ignoreOffer = !pc.polite && offerCollision
+		if pc.ignoreOffer {
 			return
 		}
 
@@ -137,17 +146,17 @@ func (pc *PeerConnection) OnSignalingMessageHandler(msg *SignalingMessage) {
 		if msg.Description.Type == webrtc.SDPTypeOffer {
 			// Rollback!!!
 			if err := pc.SetLocalDescription(webrtc.SessionDescription{}); err != nil {
-				logrus.Panicf("Failed to rollback signaling state: %w", err)
+				logrus.Panicf("Failed to rollback signaling state: %s", err)
 			}
 
-			pc.SendSignalingMessage(&SignalingMessage{
+			pc.SendSignalingMessage(&common.SignalingMessage{
 				Description: pc.LocalDescription(),
 			})
 		}
 	} else if msg.Candidate != nil {
 		if err := pc.AddICECandidate(msg.Candidate.ToJSON()); err != nil {
 			if !pc.ignoreOffer {
-				logrus.Panicf("Failed to add new ICE candidate: %w", err)
+				logrus.Panicf("Failed to add new ICE candidate: %s", err)
 			}
 
 		}
@@ -174,4 +183,9 @@ func (pc *PeerConnection) OnDataChannelHandler(dc *webrtc.DataChannel) {
 
 		i++
 	}
+}
+
+func (pc *PeerConnection) Close() {
+	pc.SignalingClient.Close()
+	pc.PeerConnection.Close()
 }

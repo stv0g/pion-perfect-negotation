@@ -1,21 +1,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
-
-type Message struct {
-	Sender *Connection
-	Data   []byte
-	Type   int
-}
 
 const (
 	// Time allowed to write a message to the peer.
@@ -38,7 +36,8 @@ var (
 		WriteBufferSize: 1024,
 	} // use default options
 	sessions      = map[string]*Session{}
-	sessionsMutex = sync.RWMutex{}
+	sessionsMutex = sync.Mutex{}
+	server        *http.Server
 )
 
 func handle(w http.ResponseWriter, r *http.Request) {
@@ -50,32 +49,54 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 	n := strings.TrimLeft(r.URL.Path, "/")
 
-	sessionsMutex.RLock()
-	s, ok := sessions[n]
-	sessionsMutex.RUnlock()
-
-	if !ok {
+	sessionsMutex.Lock()
+	if s, ok := sessions[n]; !ok {
 		s = NewSession(n)
 
-		sessionsMutex.Lock()
 		sessions[n] = s
-		sessionsMutex.Unlock()
 
+		s.NewConnection(c)
 		logrus.Infof("Created new session: %s", n)
 	} else {
-		logrus.Infof("Use existing session: %s", n)
+		s.NewConnection(c)
+		logrus.Infof("Used existing session: %s", n)
 	}
+	sessionsMutex.Unlock()
+}
 
-	s.NewConnection(c)
+func handleSignals(signals chan os.Signal) {
+	for range signals {
+		sessionsMutex.Lock()
+		for _, s := range sessions {
+			if err := s.Close(); err != nil {
+				logrus.Panicf("Failed to close session: %s", err)
+			}
+		}
+		sessionsMutex.Unlock()
+
+		if err := server.Shutdown(context.Background()); err != nil {
+			logrus.Panicf("Failed to shutdown HTTP server: %s", err)
+		}
+	}
 }
 
 func main() {
 	flag.Parse()
 
+	signals := make(chan os.Signal, 10)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	// Block until signal is received
+	go handleSignals(signals)
+
+	server = &http.Server{
+		Addr: *addr,
+	}
+
 	http.HandleFunc("/", handle)
 
 	logrus.Infof("Listening on: %s", *addr)
-
-	err := http.ListenAndServe(*addr, nil)
-	logrus.Fatal(err)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logrus.Errorf("Failed to listen and serve: %s", err)
+	}
 }

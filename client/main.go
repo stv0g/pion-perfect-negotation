@@ -3,18 +3,29 @@ package main
 import (
 	"flag"
 	"net/url"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/sirupsen/logrus"
 )
 
 var signalingURL = flag.String("url", "ws://localhost:8080/session", "Signalling URL")
-var polite = flag.Bool("polite", false, "Is this peer polite?")
 
 func main() {
 	flag.Parse()
 
 	u, _ := url.Parse(*signalingURL)
 
-	NewPeerConnection(u, *polite)
+	pc, err := NewPeerConnection(u)
+	if err != nil {
+		logrus.Panicf("%s", err)
+	}
+	defer pc.Close()
 
-	// Block forever
-	select {}
+	signals := make(chan os.Signal, 10)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	// Block until signal is received
+	<-signals
 }

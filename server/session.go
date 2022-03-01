@@ -3,16 +3,16 @@ package main
 import (
 	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/VILLASframework/VILLASnode/tools/ws-relay/common"
 	"github.com/sirupsen/logrus"
 )
 
 type Session struct {
 	Name string
 
-	Messages chan Message
+	Messages chan common.SignalingMessage
 
-	Connections      []*Connection
+	Connections      map[*Connection]interface{}
 	ConnectionsMutex sync.RWMutex
 }
 
@@ -20,8 +20,8 @@ func NewSession(name string) *Session {
 	logrus.Infof("New session: %s", name)
 	s := &Session{
 		Name:        name,
-		Connections: []*Connection{},
-		Messages:    make(chan Message, 100),
+		Connections: map[*Connection]interface{}{},
+		Messages:    make(chan common.SignalingMessage, 100),
 	}
 
 	go s.run()
@@ -37,8 +37,7 @@ func (s *Session) run() {
 	for msg := range s.Messages {
 		s.ConnectionsMutex.RLock()
 
-		for _, c := range s.Connections {
-
+		for c := range s.Connections {
 			if msg.Sender != c {
 				c.Messages <- msg
 			}
@@ -48,20 +47,25 @@ func (s *Session) run() {
 	}
 }
 
-func (s *Session) NewConnection(c *websocket.Conn) *Connection {
-	logrus.Infof("New connection from %s for session %s", c.RemoteAddr(), s)
+func (s *Session) HasImpoliteConnection() bool {
+	hasImpolite := false
+	for c := range s.Connections {
+		if !c.isPolite {
+			hasImpolite = true
+		}
+	}
+	return hasImpolite
+}
 
-	d := &Connection{
-		Conn:     c,
-		Session:  s,
-		Messages: make(chan Message, 100),
+func (s *Session) Close() error {
+	s.ConnectionsMutex.Lock()
+	defer s.ConnectionsMutex.Unlock()
+
+	for c := range s.Connections {
+		if err := c.Close(); err != nil {
+			return err
+		}
 	}
 
-	s.ConnectionsMutex.Lock()
-	s.Connections = append(s.Connections, d)
-	s.ConnectionsMutex.Unlock()
-
-	d.run()
-
-	return d
+	return nil
 }
