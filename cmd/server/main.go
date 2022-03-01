@@ -88,6 +88,9 @@ func main() {
 	http.HandleFunc("/favicon.ico", func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "Not found", http.StatusNotFound)
 	})
+	http.HandleFunc("/healthz", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Write([]byte("OK"))
+	})
 	http.HandleFunc("/api/v1/sessions", basicAuth(apiHandle))
 	http.HandleFunc("/", handlerChain)
 
