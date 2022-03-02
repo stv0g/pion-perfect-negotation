@@ -14,7 +14,7 @@ var (
 
 func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		valid := false
+		valid := true
 		if *authPassword != "" {
 			username, password, ok := r.BasicAuth()
 			valid = ok && username == *authUsername && password == *authPassword
