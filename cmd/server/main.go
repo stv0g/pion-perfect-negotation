@@ -27,14 +27,20 @@ var (
 	server        *http.Server
 )
 
-func wsHandle(w http.ResponseWriter, r *http.Request) {
-	c, err := upgrader.Upgrade(w, r, nil)
+func wsHandle(rw http.ResponseWriter, r *http.Request) {
+	c, err := upgrader.Upgrade(rw, r, nil)
 	if err != nil {
 		logrus.Errorf("Failed to upgrade: %s", err)
+		http.Error(rw, "Bad Request", http.StatusBadRequest)
 		return
 	}
 
 	n := strings.TrimLeft(r.URL.Path, "/")
+	if n == "" {
+		logrus.Error("Empty session name")
+		http.Error(rw, "Bad Request", http.StatusBadRequest)
+		return
+	}
 
 	sessionsMutex.Lock()
 
@@ -46,6 +52,7 @@ func wsHandle(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.NewConnection(c, r); err != nil {
 		logrus.Errorf("Failed to create connection: %s", err)
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 	}
 
 	sessionsMutex.Unlock()
