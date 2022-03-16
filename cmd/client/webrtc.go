@@ -170,8 +170,9 @@ func (pc *PeerConnection) OnICECandidateHandler(c *webrtc.ICECandidate) {
 
 	logrus.Infof("Found new candidate: %s", c)
 
+	ci := c.ToJSON()
 	if err := pc.SendSignalingMessage(&pkg.SignalingMessage{
-		Candidate: c,
+		Candidate: &ci,
 	}); err != nil {
 		logrus.Errorf("Failed to send candidate: %s", err)
 	}
@@ -298,7 +299,7 @@ func (pc *PeerConnection) OnSignalingMessageHandler(msg *pkg.SignalingMessage) {
 			})
 		}
 	} else if msg.Candidate != nil {
-		if err := pc.AddICECandidate(msg.Candidate.ToJSON()); err != nil && !pc.ignoreOffer {
+		if err := pc.AddICECandidate(*msg.Candidate); err != nil && !pc.ignoreOffer {
 			logrus.Panicf("Failed to add new ICE candidate: %s", err)
 		}
 	}

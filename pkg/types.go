@@ -33,7 +33,7 @@ type Role struct {
 
 type SignalingMessage struct {
 	Description *webrtc.SessionDescription `json:"description,omitempty"`
-	Candidate   *webrtc.ICECandidate       `json:"candidate,omitempty"`
+	Candidate   *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
 	Control     *ControlMessage            `json:"control,omitempty"`
 }
 

@@ -39,11 +39,6 @@ var (
 		Help: "The total number of messages exchanged",
 	}, []string{"type"})
 
-	metricCandidateTypes = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "signaling_candidate_types",
-		Help: "The total number of messages exchanged",
-	}, []string{"type", "protocol", "tcp_type"})
-
 	metricHttpRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
 		Help: "Count of all HTTP requests",
