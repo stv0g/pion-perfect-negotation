@@ -5,7 +5,7 @@ go 1.17
 require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/pion/webrtc/v3 v3.1.24
-	github.com/sirupsen/logrus v1.8.1
+	github.com/sirupsen/logrus v1.9.2
 )
 
 require (
@@ -28,6 +28,6 @@ require (
 	github.com/pion/udp v0.1.1 // indirect
 	golang.org/x/crypto v0.0.0-20220214200702-86341886e292 // indirect
 	golang.org/x/net v0.0.0-20220225172249-27dd8689420f // indirect
-	golang.org/x/sys v0.0.0-20220224120231-95c6836cb0e7 // indirect
+	golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 )
